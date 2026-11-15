@@ -1,9 +1,9 @@
 
 ## Interface: 16001
 ## Title: Crowd Control
-## Notes: Automatically swaps between Base Game Quality graphics presets when entering or leaving cities.
-## Author: hejathor
-## Version: 1.0
+## Notes: Automatically changes graphics settings in crowded areas.
+## Author: github.com/hejathor/crowdcontrol
+## Version: 1.1.1
 ## IconTexture: Interface\Icons\Spell_Nature_Polymorph
 ## SavedVariables: CrowdControlDB, CityGraphicsDB
 
