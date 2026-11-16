@@ -217,9 +217,18 @@ local GRAPHICS_OVERRIDES = {
     },
 }
 
+local SMOOTH_TRANSITION_CVARS = {
+    graphicsTextureResolution = true,
+    graphicsLightMode = true,
+    graphicsEnvironmentDetail = true,
+}
+
 local DEFAULTS = {
     outsideQuality = 10,
     cityQuality = 1,
+    outsideRenderScale = 1.0,
+    cityRenderScale = 1.0,
+    smoothTransition = false,
     secondaryLighting = "",
     graphicsOverrides = {},
     outsideOverrides = {},
@@ -232,6 +241,8 @@ local isInCrowdedArea = false
 local lastProfile = nil
 local category
 local sliderCounter = 0
+
+local refreshAllGraphicsSections
 
 local function IsValidQuality(value)
     return type(value) == "number"
@@ -269,14 +280,27 @@ local function GetProfile(crowded)
     if crowded then
         return {
             qualityKey = "cityQuality",
+            renderScaleKey = "cityRenderScale",
             overrides = db.cityOverrides,
         }
     end
 
     return {
         qualityKey = "outsideQuality",
+        renderScaleKey = "outsideRenderScale",
         overrides = db.outsideOverrides,
     }
+end
+
+local function GetStandardEffectiveValue(cvar)
+    local quality = db.outsideQuality
+    local value = PRESETS[quality][cvar]
+
+    if db.outsideOverrides[cvar] ~= nil then
+        value = db.outsideOverrides[cvar]
+    end
+
+    return value
 end
 
 local function InitializeDatabase()
@@ -292,12 +316,28 @@ local function InitializeDatabase()
         end
     end
 
+    if type(db.smoothTransition) ~= "boolean" then
+        db.smoothTransition = DEFAULTS.smoothTransition
+    end
+
     if not IsValidQuality(db.outsideQuality) then
         db.outsideQuality = DEFAULTS.outsideQuality
     end
 
     if not IsValidQuality(db.cityQuality) then
         db.cityQuality = DEFAULTS.cityQuality
+    end
+
+    if type(db.outsideRenderScale) ~= "number"
+        or db.outsideRenderScale < 0.33
+        or db.outsideRenderScale > 1.0 then
+        db.outsideRenderScale = DEFAULTS.outsideRenderScale
+    end
+
+    if type(db.cityRenderScale) ~= "number"
+        or db.cityRenderScale < 0.33
+        or db.cityRenderScale > 1.0 then
+        db.cityRenderScale = DEFAULTS.cityRenderScale
     end
 
     if type(db.outsideOverrides) ~= "table" then
@@ -407,31 +447,41 @@ local function IsCrowdedArea()
     return false
 end
 
-local function ApplyPreset(quality)
-    local preset = PRESETS[quality]
+local function SetCVarIfDifferent(cvar, value)
+    if GetCVar(cvar) == nil then
+        return
+    end
 
+    local currentValue = GetCVar(cvar)
+    local targetValue = tostring(value)
+
+    if currentValue ~= targetValue then
+        SetCVar(cvar, value)
+    end
+end
+
+local function ApplyEffectiveGraphicsSettings(quality, overrides)
+    local preset = PRESETS[quality]
     if not preset then
         return
     end
 
+    local finalSettings = {}
+
     for cvar, value in pairs(preset) do
-        if GetCVar(cvar) ~= nil then
-            SetCVar(cvar, value)
+        if cvar ~= "graphicsQuality" then
+            finalSettings[cvar] = value
         end
     end
-end
 
-local function ApplyGraphicsOverrides(overrides)
-    if type(overrides) ~= "table" then
-        return
+    if type(overrides) == "table" then
+        for cvar, value in pairs(overrides) do
+            finalSettings[cvar] = value
+        end
     end
 
-    for _, setting in ipairs(GRAPHICS_OVERRIDES) do
-        local value = overrides[setting.cvar]
-
-        if value ~= nil and GetCVar(setting.cvar) ~= nil then
-            SetCVar(setting.cvar, value)
-        end
+    for cvar, value in pairs(finalSettings) do
+        SetCVarIfDifferent(cvar, value)
     end
 end
 
@@ -443,14 +493,37 @@ local function ApplyCurrentProfile(force)
     local crowded = IsCrowdedArea()
     local profile = GetProfile(crowded)
     local quality = db[profile.qualityKey]
-    local profileKey = (crowded and "crowded-" or "outside-") .. quality
+    local renderScale = db[profile.renderScaleKey]
+
+    local profileKey = (crowded and "crowded-" or "outside-")
+        .. quality .. "-" .. renderScale
+        .. "-smooth-" .. tostring(db.smoothTransition)
+        .. "-standard-" .. db.outsideQuality
 
     if not force and profileKey == lastProfile then
         return
     end
 
-    ApplyPreset(quality)
-    ApplyGraphicsOverrides(profile.overrides)
+    if crowded and db.smoothTransition then
+        local effectiveCityOverrides = {}
+
+        for cvar, value in pairs(db.cityOverrides) do
+            effectiveCityOverrides[cvar] = value
+        end
+
+        for cvar in pairs(SMOOTH_TRANSITION_CVARS) do
+            effectiveCityOverrides[cvar] = GetStandardEffectiveValue(cvar)
+        end
+
+        ApplyEffectiveGraphicsSettings(
+            quality,
+            effectiveCityOverrides
+        )
+    else
+        ApplyEffectiveGraphicsSettings(quality, profile.overrides)
+    end
+
+    SetCVarIfDifferent("RenderScale", renderScale)
 
     lastProfile = profileKey
     isInCrowdedArea = crowded
@@ -510,7 +583,8 @@ local function CreateGraphicsDropdown(
     setting,
     overrides,
     qualityKey,
-    yOffset
+    yOffset,
+    isLinked
 )
     local label = parent:CreateFontString(
         nil,
@@ -541,6 +615,10 @@ local function CreateGraphicsDropdown(
     UIDropDownMenu_SetWidth(dropdown, 85)
 
     local function GetCurrentValue()
+        if isLinked and db.smoothTransition then
+            return GetStandardEffectiveValue(setting.cvar)
+        end
+
         local value = overrides[setting.cvar]
 
         if value == nil then
@@ -551,13 +629,27 @@ local function CreateGraphicsDropdown(
     end
 
     local function Refresh()
+        local linked = isLinked and db.smoothTransition
+
         UIDropDownMenu_SetText(
             dropdown,
             GetValueLabel(setting, GetCurrentValue())
         )
+
+        if linked then
+            UIDropDownMenu_DisableDropDown(dropdown)
+            label:SetTextColor(0.5, 0.5, 0.5)
+        else
+            UIDropDownMenu_EnableDropDown(dropdown)
+            label:SetTextColor(1, 0.82, 0)
+        end
     end
 
     UIDropDownMenu_Initialize(dropdown, function(self, level)
+        if isLinked and db.smoothTransition then
+            return
+        end
+
         local values = GetOverrideValues(setting.cvar)
 
         for _, value in ipairs(values) do
@@ -567,9 +659,18 @@ local function CreateGraphicsDropdown(
             info.checked = GetCurrentValue() == value
 
             info.func = function()
+                if isLinked and db.smoothTransition then
+                    return
+                end
+
                 overrides[setting.cvar] = value
                 Refresh()
+
                 ApplyCurrentProfile(true)
+
+                if refreshAllGraphicsSections then
+                    refreshAllGraphicsSections()
+                end
             end
 
             UIDropDownMenu_AddButton(info, level)
@@ -585,7 +686,8 @@ local function CreateGraphicsSlider(
     setting,
     overrides,
     qualityKey,
-    yOffset
+    yOffset,
+    isLinked
 )
     local values = GetOverrideValues(setting.cvar)
     local minValue = values[1]
@@ -638,6 +740,10 @@ local function CreateGraphicsSlider(
     local updating = false
 
     local function GetCurrentValue()
+        if isLinked and db.smoothTransition then
+            return GetStandardEffectiveValue(setting.cvar)
+        end
+
         local value = overrides[setting.cvar]
 
         if value == nil then
@@ -651,15 +757,33 @@ local function CreateGraphicsSlider(
         updating = true
 
         local value = GetCurrentValue()
+        local linked = isLinked and db.smoothTransition
 
         slider:SetValue(value)
-        valueText:SetText(tostring(value + (setting.displayOffset or 0)))
+
+        valueText:SetText(
+            tostring(value + (setting.displayOffset or 0))
+        )
+
+        if linked then
+            slider:Disable()
+            label:SetTextColor(0.5, 0.5, 0.5)
+            valueText:SetTextColor(0.5, 0.5, 0.5)
+        else
+            slider:Enable()
+            label:SetTextColor(1, 0.82, 0)
+            valueText:SetTextColor(1, 1, 1)
+        end
 
         updating = false
     end
 
     slider:SetScript("OnValueChanged", function(self, value)
         if updating then
+            return
+        end
+
+        if isLinked and db.smoothTransition then
             return
         end
 
@@ -671,6 +795,10 @@ local function CreateGraphicsSlider(
         )
 
         ApplyCurrentProfile(true)
+
+        if refreshAllGraphicsSections then
+            refreshAllGraphicsSections()
+        end
     end)
 
     Refresh()
@@ -681,11 +809,91 @@ local function CreateGraphicsSection(
     parent,
     title,
     qualityKey,
-    overrides
+    overrides,
+    isCrowdedColumn
 )
     local refreshFunctions = {}
 
     CreateSectionTitle(parent, title, -10)
+
+    local renderScaleLabel = parent:CreateFontString(
+        nil,
+        "ARTWORK",
+        "GameFontNormal"
+    )
+
+    renderScaleLabel:SetPoint("TOPLEFT", parent, "TOPLEFT", 8, -48)
+    renderScaleLabel:SetText("Render Scale")
+
+    local renderScaleSlider = CreateGraphicsSliderFrame(parent)
+
+    renderScaleSlider:SetPoint(
+        "TOPLEFT",
+        renderScaleLabel,
+        "BOTTOMLEFT",
+        0,
+        -12
+    )
+
+    renderScaleSlider:SetPoint(
+        "RIGHT",
+        parent,
+        "TOPRIGHT",
+        -43,
+        -80
+    )
+
+    renderScaleSlider:SetHeight(16)
+    renderScaleSlider:SetMinMaxValues(0.33, 1.0)
+    renderScaleSlider:SetValueStep(0.01)
+
+    if renderScaleSlider.SetObeyStepOnDrag then
+        renderScaleSlider:SetObeyStepOnDrag(true)
+    end
+
+    local renderScaleValueText = parent:CreateFontString(
+        nil,
+        "ARTWORK",
+        "GameFontHighlightSmall"
+    )
+
+    renderScaleValueText:SetPoint("LEFT", renderScaleSlider, "RIGHT", 7, 0)
+    renderScaleValueText:SetJustifyH("LEFT")
+
+    local updatingRenderScale = false
+    local renderScaleKey = qualityKey == "cityQuality"
+        and "cityRenderScale"
+        or "outsideRenderScale"
+
+    local function RefreshRenderScale()
+        updatingRenderScale = true
+
+        local renderScale = db[renderScaleKey]
+        renderScaleSlider:SetValue(renderScale)
+
+        renderScaleValueText:SetText(
+            string.format("%d%%", math.floor(renderScale * 100 + 0.5))
+        )
+
+        updatingRenderScale = false
+    end
+
+    renderScaleSlider:SetScript("OnValueChanged", function(self, value)
+        if updatingRenderScale then
+            return
+        end
+
+        value = math.floor(value * 100 + 0.5) / 100
+        value = math.max(0.33, math.min(1.0, value))
+
+        db[renderScaleKey] = value
+
+        renderScaleValueText:SetText(
+            string.format("%d%%", math.floor(value * 100 + 0.5))
+        )
+
+        ApplyCurrentProfile(true)
+    end)
 
     local baseLabel = parent:CreateFontString(
         nil,
@@ -693,7 +901,7 @@ local function CreateGraphicsSection(
         "GameFontNormal"
     )
 
-    baseLabel:SetPoint("TOPLEFT", parent, "TOPLEFT", 8, -48)
+    baseLabel:SetPoint("TOPLEFT", parent, "TOPLEFT", 8, -123)
     baseLabel:SetText("Base Game Quality")
 
     local baseSlider = CreateGraphicsSliderFrame(parent)
@@ -711,7 +919,7 @@ local function CreateGraphicsSection(
         parent,
         "TOPRIGHT",
         -43,
-        -80
+        -155
     )
 
     baseSlider:SetHeight(16)
@@ -765,15 +973,24 @@ local function CreateGraphicsSection(
         end
 
         ApplyCurrentProfile(true)
+
+        if refreshAllGraphicsSections then
+            refreshAllGraphicsSections()
+        end
     end)
 
     RefreshBase()
+    RefreshRenderScale()
 
-    local currentYOffset = -135
+    local currentYOffset = -210
     local firstSlider = true
 
     for _, setting in ipairs(GRAPHICS_OVERRIDES) do
         local refresh
+        local isLinked = isCrowdedColumn
+            and SMOOTH_TRANSITION_CVARS[setting.cvar]
+            and true
+            or false
 
         if setting.slider then
             if firstSlider then
@@ -786,7 +1003,8 @@ local function CreateGraphicsSection(
                 setting,
                 overrides,
                 qualityKey,
-                currentYOffset
+                currentYOffset,
+                isLinked
             )
 
             currentYOffset = currentYOffset - 75
@@ -796,7 +1014,8 @@ local function CreateGraphicsSection(
                 setting,
                 overrides,
                 qualityKey,
-                currentYOffset
+                currentYOffset,
+                isLinked
             )
 
             currentYOffset = currentYOffset - 38
@@ -807,6 +1026,7 @@ local function CreateGraphicsSection(
 
     return {
         refresh = function()
+            RefreshRenderScale()
             RefreshBase()
 
             for _, refresh in ipairs(refreshFunctions) do
@@ -921,26 +1141,53 @@ local function CreateOptionsPanel()
         )
     end)
 
-    -- Crowded areas section.
     local areaTitle = CreateSectionTitle(
         content,
         "Crowded Areas",
         -12
     )
 
-    local areaOptionsFrame = CreateFrame("Frame", nil, content)
-    areaOptionsFrame:SetPoint(
+    areaTitle:ClearAllPoints()
+    areaTitle:SetPoint(
+        "TOPLEFT",
+        content,
+        "TOPLEFT",
+        12,
+        -12
+    )
+
+    local areaDescription = content:CreateFontString(
+        nil,
+        "ARTWORK",
+        "GameFontHighlightSmall"
+    )
+
+    areaDescription:ClearAllPoints()
+    areaDescription:SetPoint(
         "TOPLEFT",
         areaTitle,
         "BOTTOMLEFT",
         0,
-        -12
+        -6
+    )
+
+    areaDescription:SetText(
+        "Adjust where 'Graphics (crowded areas)' should be applied."
+    )
+
+    local areaOptionsFrame = CreateFrame("Frame", nil, content)
+    areaOptionsFrame:SetPoint(
+        "TOPLEFT",
+        areaDescription,
+        "BOTTOMLEFT",
+        0,
+        -18
     )
     areaOptionsFrame:SetPoint(
         "RIGHT",
         content,
         "RIGHT",
-        -8,
+        0,
         0
     )
     areaOptionsFrame:SetHeight(32)
@@ -966,10 +1213,10 @@ local function CreateOptionsPanel()
     end
 
     local areaPositions = {
-        { x = 8 },
-        { x = 155 },
-        { x = 310 },
-        { x = 425 },
+        { x = -3 },
+        { x = 144 },
+        { x = 299 },
+        { x = 414 },
     }
 
     for index, option in ipairs(areaOptions) do
@@ -991,10 +1238,78 @@ local function CreateOptionsPanel()
         areaCheckboxes[option.key] = button
     end
 
-    local areaDivider = CreateDivider(content, -75)
+    local areaDivider = CreateDivider(content, -115)
 
-    -- Graphics configuration columns.
-    local graphicsTop = -105
+    -- Smooth Transition toggle and explanatory text.
+    local smoothTransitionButton = CreateFrame(
+        "CheckButton",
+        nil,
+        content,
+        "UICheckButtonTemplate"
+    )
+
+    smoothTransitionButton:SetPoint(
+        "TOPLEFT",
+        content,
+        "TOPLEFT",
+        8,
+        -145
+    )
+    smoothTransitionButton:SetSize(24, 24)
+    smoothTransitionButton:SetChecked(db.smoothTransition)
+
+    local smoothTransitionLabel = content:CreateFontString(
+        nil,
+        "ARTWORK",
+        "GameFontNormal"
+    )
+
+    smoothTransitionLabel:SetPoint(
+        "LEFT",
+        smoothTransitionButton,
+        "RIGHT",
+        2,
+        0
+    )
+    smoothTransitionLabel:SetText("Smooth Transition")
+
+    smoothTransitionButton:SetScript("OnClick", function(self)
+        db.smoothTransition = self:GetChecked() and true or false
+
+        ApplyCurrentProfile(true)
+
+        if refreshAllGraphicsSections then
+            refreshAllGraphicsSections()
+        end
+    end)
+
+    local smoothTransitionDescription = content:CreateFontString(
+        nil,
+        "ARTWORK",
+        "GameFontHighlightSmall"
+    )
+
+    smoothTransitionDescription:SetPoint(
+        "TOPLEFT",
+        smoothTransitionButton,
+        "BOTTOMLEFT",
+        4,
+        -10
+    )
+    smoothTransitionDescription:SetPoint(
+        "RIGHT",
+        content,
+        "RIGHT",
+        -12,
+        0
+    )
+    smoothTransitionDescription:SetJustifyH("LEFT")
+    smoothTransitionDescription:SetWordWrap(true)
+    smoothTransitionDescription:SetText(
+        "Enable to prevent lag when entering and leaving crowded areas. 'Texture Resolution', 'Secondary Lighting' and 'Environment Detail' for 'Graphics (crowded areas)' will be locked to the same values as 'Graphics (standard)'."
+    )
+
+    local graphicsTop = -240
 
     local outsideFrame = CreateFrame("Frame", nil, content)
     local cityFrame = CreateFrame("Frame", nil, content)
@@ -1019,15 +1334,23 @@ local function CreateOptionsPanel()
         outsideFrame,
         "Graphics (standard)",
         "outsideQuality",
-        db.outsideOverrides
+        db.outsideOverrides,
+        false
     )
 
     local citySection = CreateGraphicsSection(
         cityFrame,
         "Graphics (crowded areas)",
         "cityQuality",
-        db.cityOverrides
+        db.cityOverrides,
+        true
     )
+
+    refreshAllGraphicsSections = function()
+        outsideSection.refresh()
+        citySection.refresh()
+        smoothTransitionButton:SetChecked(db.smoothTransition)
+    end
 
     local sectionHeight = math.max(
         outsideSection.height,
@@ -1115,7 +1438,6 @@ local function CreateOptionsPanel()
 
         graphicsDivider:ClearAllPoints()
 
-        -- Start the divider level with the Base Game Quality title.
         graphicsDivider:SetPoint(
             "TOP",
             outsideFrame,
@@ -1168,12 +1490,12 @@ local function CreateOptionsPanel()
         UpdateColumnWidths()
         RefreshAreaCheckboxes()
 
+        smoothTransitionButton:SetChecked(db.smoothTransition)
+
         scrollFrame:SetVerticalScroll(0)
 
         outsideSection.refresh()
         citySection.refresh()
-
-        ApplyCurrentProfile(true)
     end)
 
     UpdateColumnWidths()
