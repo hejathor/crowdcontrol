@@ -217,9 +217,14 @@ local GRAPHICS_OVERRIDES = {
     },
 }
 
-local SMOOTH_TRANSITION_CVARS = {
+-- Avoid stuttering controls these two dropdowns.
+local AVOID_STUTTERING_CVARS = {
     graphicsTextureResolution = true,
     graphicsLightMode = true,
+}
+
+-- Avoid environment refresh controls this slider.
+local AVOID_ENVIRONMENT_REFRESH_CVARS = {
     graphicsEnvironmentDetail = true,
 }
 
@@ -228,7 +233,8 @@ local DEFAULTS = {
     cityQuality = 1,
     outsideRenderScale = 1.0,
     cityRenderScale = 1.0,
-    smoothTransition = false,
+    avoidStuttering = false,
+    avoidEnvironmentRefresh = false,
     secondaryLighting = "",
     graphicsOverrides = {},
     outsideOverrides = {},
@@ -316,8 +322,12 @@ local function InitializeDatabase()
         end
     end
 
-    if type(db.smoothTransition) ~= "boolean" then
-        db.smoothTransition = DEFAULTS.smoothTransition
+    if type(db.avoidStuttering) ~= "boolean" then
+        db.avoidStuttering = DEFAULTS.avoidStuttering
+    end
+
+    if type(db.avoidEnvironmentRefresh) ~= "boolean" then
+        db.avoidEnvironmentRefresh = DEFAULTS.avoidEnvironmentRefresh
     end
 
     if not IsValidQuality(db.outsideQuality) then
@@ -497,22 +507,33 @@ local function ApplyCurrentProfile(force)
 
     local profileKey = (crowded and "crowded-" or "outside-")
         .. quality .. "-" .. renderScale
-        .. "-smooth-" .. tostring(db.smoothTransition)
+        .. "-stuttering-" .. tostring(db.avoidStuttering)
+        .. "-environment-" .. tostring(db.avoidEnvironmentRefresh)
         .. "-standard-" .. db.outsideQuality
 
     if not force and profileKey == lastProfile then
         return
     end
 
-    if crowded and db.smoothTransition then
+    if crowded then
         local effectiveCityOverrides = {}
 
         for cvar, value in pairs(db.cityOverrides) do
             effectiveCityOverrides[cvar] = value
         end
 
-        for cvar in pairs(SMOOTH_TRANSITION_CVARS) do
-            effectiveCityOverrides[cvar] = GetStandardEffectiveValue(cvar)
+        if db.avoidStuttering then
+            for cvar in pairs(AVOID_STUTTERING_CVARS) do
+                effectiveCityOverrides[cvar] =
+                    GetStandardEffectiveValue(cvar)
+            end
+        end
+
+        if db.avoidEnvironmentRefresh then
+            for cvar in pairs(AVOID_ENVIRONMENT_REFRESH_CVARS) do
+                effectiveCityOverrides[cvar] =
+                    GetStandardEffectiveValue(cvar)
+            end
         end
 
         ApplyEffectiveGraphicsSettings(
@@ -584,7 +605,7 @@ local function CreateGraphicsDropdown(
     overrides,
     qualityKey,
     yOffset,
-    isLinked
+    linkToggleKey
 )
     local label = parent:CreateFontString(
         nil,
@@ -614,8 +635,12 @@ local function CreateGraphicsDropdown(
 
     UIDropDownMenu_SetWidth(dropdown, 85)
 
+    local function IsLinked()
+        return linkToggleKey ~= nil and db[linkToggleKey]
+    end
+
     local function GetCurrentValue()
-        if isLinked and db.smoothTransition then
+        if IsLinked() then
             return GetStandardEffectiveValue(setting.cvar)
         end
 
@@ -629,7 +654,7 @@ local function CreateGraphicsDropdown(
     end
 
     local function Refresh()
-        local linked = isLinked and db.smoothTransition
+        local linked = IsLinked()
 
         UIDropDownMenu_SetText(
             dropdown,
@@ -646,7 +671,7 @@ local function CreateGraphicsDropdown(
     end
 
     UIDropDownMenu_Initialize(dropdown, function(self, level)
-        if isLinked and db.smoothTransition then
+        if IsLinked() then
             return
         end
 
@@ -659,7 +684,7 @@ local function CreateGraphicsDropdown(
             info.checked = GetCurrentValue() == value
 
             info.func = function()
-                if isLinked and db.smoothTransition then
+                if IsLinked() then
                     return
                 end
 
@@ -687,7 +712,7 @@ local function CreateGraphicsSlider(
     overrides,
     qualityKey,
     yOffset,
-    isLinked
+    linkToggleKey
 )
     local values = GetOverrideValues(setting.cvar)
     local minValue = values[1]
@@ -739,8 +764,12 @@ local function CreateGraphicsSlider(
 
     local updating = false
 
+    local function IsLinked()
+        return linkToggleKey ~= nil and db[linkToggleKey]
+    end
+
     local function GetCurrentValue()
-        if isLinked and db.smoothTransition then
+        if IsLinked() then
             return GetStandardEffectiveValue(setting.cvar)
         end
 
@@ -757,7 +786,7 @@ local function CreateGraphicsSlider(
         updating = true
 
         local value = GetCurrentValue()
-        local linked = isLinked and db.smoothTransition
+        local linked = IsLinked()
 
         slider:SetValue(value)
 
@@ -783,7 +812,7 @@ local function CreateGraphicsSlider(
             return
         end
 
-        if isLinked and db.smoothTransition then
+        if IsLinked() then
             return
         end
 
@@ -987,10 +1016,15 @@ local function CreateGraphicsSection(
 
     for _, setting in ipairs(GRAPHICS_OVERRIDES) do
         local refresh
-        local isLinked = isCrowdedColumn
-            and SMOOTH_TRANSITION_CVARS[setting.cvar]
-            and true
-            or false
+        local linkToggleKey = nil
+
+        if isCrowdedColumn then
+            if AVOID_STUTTERING_CVARS[setting.cvar] then
+                linkToggleKey = "avoidStuttering"
+            elseif AVOID_ENVIRONMENT_REFRESH_CVARS[setting.cvar] then
+                linkToggleKey = "avoidEnvironmentRefresh"
+            end
+        end
 
         if setting.slider then
             if firstSlider then
@@ -1004,7 +1038,7 @@ local function CreateGraphicsSection(
                 overrides,
                 qualityKey,
                 currentYOffset,
-                isLinked
+                linkToggleKey
             )
 
             currentYOffset = currentYOffset - 75
@@ -1015,7 +1049,7 @@ local function CreateGraphicsSection(
                 overrides,
                 qualityKey,
                 currentYOffset,
-                isLinked
+                linkToggleKey
             )
 
             currentYOffset = currentYOffset - 38
@@ -1072,33 +1106,6 @@ local function CreateOptionsPanel()
     local panel = CreateFrame("Frame")
     panel.name = "Crowd Control"
 
-    local heading = panel:CreateFontString(
-        nil,
-        "ARTWORK",
-        "GameFontNormalLarge"
-    )
-
-    heading:SetPoint("TOPLEFT", 16, -20)
-    heading:SetText("Crowd Control")
-
-    local description = panel:CreateFontString(
-        nil,
-        "ARTWORK",
-        "GameFontHighlightSmall"
-    )
-
-    description:SetPoint(
-        "TOPLEFT",
-        heading,
-        "BOTTOMLEFT",
-        0,
-        -10
-    )
-
-    description:SetText(
-        "Automatically changes graphics settings in crowded areas."
-    )
-
     local scrollFrame = CreateFrame(
         "ScrollFrame",
         nil,
@@ -1108,8 +1115,8 @@ local function CreateOptionsPanel()
 
     scrollFrame:SetPoint(
         "TOPLEFT",
-        description,
-        "BOTTOMLEFT",
+        panel,
+        "TOPLEFT",
         0,
         -15
     )
@@ -1152,7 +1159,7 @@ local function CreateOptionsPanel()
         "TOPLEFT",
         content,
         "TOPLEFT",
-        12,
+        16,
         -12
     )
 
@@ -1172,7 +1179,7 @@ local function CreateOptionsPanel()
     )
 
     areaDescription:SetText(
-        "Adjust where 'Graphics (crowded areas)' should be applied."
+        "Control where 'Graphics (crowded areas)' should be applied."
     )
 
     local areaOptionsFrame = CreateFrame("Frame", nil, content)
@@ -1240,49 +1247,23 @@ local function CreateOptionsPanel()
 
     local areaDivider = CreateDivider(content, -115)
 
-    -- Smooth Transition toggle and explanatory text.
-    local smoothTransitionButton = CreateFrame(
-        "CheckButton",
-        nil,
-        content,
-        "UICheckButtonTemplate"
-    )
-
-    smoothTransitionButton:SetPoint(
-        "TOPLEFT",
-        content,
-        "TOPLEFT",
-        8,
-        -145
-    )
-    smoothTransitionButton:SetSize(24, 24)
-    smoothTransitionButton:SetChecked(db.smoothTransition)
-
-    local smoothTransitionLabel = content:CreateFontString(
+    -- Smooth Transition heading.
+    local smoothTransitionHeading = content:CreateFontString(
         nil,
         "ARTWORK",
-        "GameFontNormal"
+        "GameFontNormalLarge"
     )
 
-    smoothTransitionLabel:SetPoint(
-        "LEFT",
-        smoothTransitionButton,
-        "RIGHT",
-        2,
-        0
+    smoothTransitionHeading:SetPoint(
+        "TOPLEFT",
+        content,
+        "TOPLEFT",
+        16,
+        -145
     )
-    smoothTransitionLabel:SetText("Smooth Transition")
+    smoothTransitionHeading:SetText("Smooth Transitions")
 
-    smoothTransitionButton:SetScript("OnClick", function(self)
-        db.smoothTransition = self:GetChecked() and true or false
-
-        ApplyCurrentProfile(true)
-
-        if refreshAllGraphicsSections then
-            refreshAllGraphicsSections()
-        end
-    end)
-
+    -- Smooth Transition description.
     local smoothTransitionDescription = content:CreateFontString(
         nil,
         "ARTWORK",
@@ -1291,25 +1272,113 @@ local function CreateOptionsPanel()
 
     smoothTransitionDescription:SetPoint(
         "TOPLEFT",
-        smoothTransitionButton,
+        smoothTransitionHeading,
         "BOTTOMLEFT",
-        4,
-        -10
-    )
-    smoothTransitionDescription:SetPoint(
-        "RIGHT",
-        content,
-        "RIGHT",
-        -12,
-        0
-    )
-    smoothTransitionDescription:SetJustifyH("LEFT")
-    smoothTransitionDescription:SetWordWrap(true)
-    smoothTransitionDescription:SetText(
-        "Enable to prevent lag when entering and leaving crowded areas. 'Texture Resolution', 'Secondary Lighting' and 'Environment Detail' for 'Graphics (crowded areas)' will be locked to the same values as 'Graphics (standard)'."
+        0,
+        -6
     )
 
-    local graphicsTop = -240
+    smoothTransitionDescription:SetText(
+        "Control how to handle transitions in graphics."
+    )
+
+    -- Avoid stuttering toggle.
+    local avoidStutteringButton = CreateFrame(
+        "CheckButton",
+        nil,
+        content,
+        "UICheckButtonTemplate"
+    )
+
+    avoidStutteringButton:SetPoint(
+        "TOPLEFT",
+        smoothTransitionDescription,
+        "BOTTOMLEFT",
+        -4,
+        -18
+    )
+    avoidStutteringButton:SetSize(24, 24)
+    avoidStutteringButton:SetChecked(db.avoidStuttering)
+
+    local avoidStutteringLabel = content:CreateFontString(
+        nil,
+        "ARTWORK",
+        "GameFontNormal"
+    )
+
+    avoidStutteringLabel:SetPoint(
+        "LEFT",
+        avoidStutteringButton,
+        "RIGHT",
+        2,
+        0
+    )
+    avoidStutteringLabel:SetWidth(680)
+    avoidStutteringLabel:SetJustifyH("LEFT")
+    avoidStutteringLabel:SetWordWrap(true)
+    avoidStutteringLabel:SetText(
+        "|cffffd100No stutter|r|cffffffff by locking 'Texture Resolution' and 'Secondary Lighting' to '(standard)' values.|r"
+    )
+
+    avoidStutteringButton:SetScript("OnClick", function(self)
+        db.avoidStuttering = self:GetChecked() and true or false
+
+        ApplyCurrentProfile(true)
+
+        if refreshAllGraphicsSections then
+            refreshAllGraphicsSections()
+        end
+    end)
+
+    -- Avoid environment toggle, stacked underneath.
+    local avoidEnvironmentRefreshButton = CreateFrame(
+        "CheckButton",
+        nil,
+        content,
+        "UICheckButtonTemplate"
+    )
+
+    avoidEnvironmentRefreshButton:SetPoint(
+        "TOPLEFT",
+        avoidStutteringButton,
+        "BOTTOMLEFT",
+        0,
+        -8
+    )
+    avoidEnvironmentRefreshButton:SetSize(24, 24)
+    avoidEnvironmentRefreshButton:SetChecked(db.avoidEnvironmentRefresh)
+
+    local avoidEnvironmentRefreshLabel = content:CreateFontString(
+        nil,
+        "ARTWORK",
+        "GameFontNormal"
+    )
+
+    avoidEnvironmentRefreshLabel:SetPoint(
+        "LEFT",
+        avoidEnvironmentRefreshButton,
+        "RIGHT",
+        2,
+        0
+    )
+    avoidEnvironmentRefreshLabel:SetWidth(680)
+    avoidEnvironmentRefreshLabel:SetJustifyH("LEFT")
+    avoidEnvironmentRefreshLabel:SetWordWrap(true)
+    avoidEnvironmentRefreshLabel:SetText(
+        "|cffffd100No environment refresh|r|cffffffff by locking 'Environment Detail' to '(standard)' value.|r"
+    )
+
+    avoidEnvironmentRefreshButton:SetScript("OnClick", function(self)
+        db.avoidEnvironmentRefresh = self:GetChecked() and true or false
+
+        ApplyCurrentProfile(true)
+
+        if refreshAllGraphicsSections then
+            refreshAllGraphicsSections()
+        end
+    end)
+
+    local graphicsTop = -285
 
     local outsideFrame = CreateFrame("Frame", nil, content)
     local cityFrame = CreateFrame("Frame", nil, content)
@@ -1349,7 +1418,11 @@ local function CreateOptionsPanel()
     refreshAllGraphicsSections = function()
         outsideSection.refresh()
         citySection.refresh()
-        smoothTransitionButton:SetChecked(db.smoothTransition)
+
+        avoidStutteringButton:SetChecked(db.avoidStuttering)
+        avoidEnvironmentRefreshButton:SetChecked(
+            db.avoidEnvironmentRefresh
+        )
     end
 
     local sectionHeight = math.max(
@@ -1475,7 +1548,7 @@ local function CreateOptionsPanel()
             "TOPLEFT",
             graphicsBottomDivider,
             "BOTTOMLEFT",
-            0,
+            8,
             -15
         )
 
@@ -1490,7 +1563,10 @@ local function CreateOptionsPanel()
         UpdateColumnWidths()
         RefreshAreaCheckboxes()
 
-        smoothTransitionButton:SetChecked(db.smoothTransition)
+        avoidStutteringButton:SetChecked(db.avoidStuttering)
+        avoidEnvironmentRefreshButton:SetChecked(
+            db.avoidEnvironmentRefresh
+        )
 
         scrollFrame:SetVerticalScroll(0)
 
