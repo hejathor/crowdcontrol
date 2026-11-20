@@ -9,7 +9,11 @@
 <br>
 
 <p align="center">
-  <i>World of Warcraft: Forever</i> addon that automatically changes graphics settings in crowded areas.
+  World of Warcraft addon to automatically change graphics in crowded areas.
+</p>
+
+<p align="center">
+  <i>World of Warcraft: Forever & World of Warcraft: Midnight</i>
 </p>
 
 <br>
