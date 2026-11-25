@@ -3,7 +3,7 @@ local ADDON_NAME = "CrowdControl"
 local CITY_ZONES = {
     "Stormwind City", "Orgrimmar", "Ironforge", "Darnassus",
     "Undercity", "Thunder Bluff", "The Exodar",
-    "Silvermoon City", "Shattrath City", "Dalaran",
+    "Silvermoon City", "Shattrath City", "City of Dalaran", "Dalaran",
     "Shrine of Two Moons", "Shrine of Seven Stars",
     "Warspear", "Stormshield", "Boralus", "Dazar'alor",
     "Oribos", "Valdrakken", "Dornogal"
