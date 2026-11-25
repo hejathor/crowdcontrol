@@ -2,7 +2,7 @@
 ## Title: Crowd Control
 ## Notes: Automatically change graphics in crowded areas.
 ## Author: github.com/hejathor/crowdcontrol
-## Version: 1.3
+## Version: 1.3.2
 ## IconTexture: Interface\Icons\Spell_Nature_Polymorph
 ## SavedVariables: CrowdControlDB
 
